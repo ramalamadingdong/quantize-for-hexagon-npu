@@ -1,0 +1,13 @@
+{
+  "name": "hexagon-npu",
+  "owner": {
+    "name": "rmouro"
+  },
+  "plugins": [
+    {
+      "name": "quantize-for-hexagon-npu",
+      "source": "./",
+      "description": "Quantize + compile models for Hexagon HTP across all three routes (AI Hub, QAIRT native, ORT QNN EP), with SoC targeting read out of the SDK, calibration recipes, a validation ladder, and pitfalls keyed by real error strings."
+    }
+  ]
+}

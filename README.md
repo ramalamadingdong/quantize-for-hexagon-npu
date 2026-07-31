@@ -1,0 +1,88 @@
+# quantize-for-hexagon-npu
+
+A portable skill for getting a neural network quantized and running on the **Qualcomm Hexagon NPU
+(HTP)**. It covers all three compile routes — Qualcomm AI Hub cloud jobs, the local QAIRT/QNN
+toolchain, and ONNX Runtime's QNN Execution Provider with EPContext AOT caching — plus SoC targeting,
+calibration recipes, a validation ladder, and a pitfalls section keyed by the actual error strings you
+will see. One `SKILL.md` (Agent Skills standard) serves two harnesses:
+
+- **Claude Code** as a plugin (this repo is also a plugin marketplace).
+- **qGenie / Codex CLI** as an installable skill (`$skill-installer`).
+
+## Layout
+
+```
+quantize-for-hexagon-npu/
+  .claude-plugin/
+    marketplace.json                  # marketplace catalog; the plugin source is the repo root ("./")
+    plugin.json                       # plugin manifest (skills auto-discovered from skills/)
+  skills/
+    quantize-for-hexagon-npu/
+      SKILL.md                        # decision guide + universal rules (auto-loads when relevant)
+      agents/openai.yaml              # qGenie/Codex UI metadata (display name, prompt)
+      reference/                      # loaded on demand
+        aihub.md                      # Path A: AI Hub compile/quantize jobs, LLM + AIMET flow
+        qairt.md                      # Path B: qairt-converter/quantizer, context binaries, HTP config
+        ort-qnn-ep.md                 # Path C: QNN EP options, EPContext, proving NPU placement
+        quantization-recipes.md       # calibration, bit-width choice, transformer MatMul-only recipe
+        soc-targets.md                # name strings vs dsp_arch vs soc_model; VTCM
+        accuracy-debug.md             # validation ladder, layerwise diffing, spill/fill
+        large-models.md               # >2 GB ONNX, graph splitting, concurrency budget
+        pitfalls.md                   # symptom -> cause -> fix, by error string
+  README.md
+```
+
+## Install in Claude Code (team)
+
+This repo is a marketplace. Add it once, then install the plugin:
+
+```text
+/plugin marketplace add github.qualcomm.com/rmouro/quantize-for-hexagon-npu
+/plugin install quantize-for-hexagon-npu@hexagon-npu
+```
+
+The skill auto-loads when you work on NPU quantization/compilation, or invoke it with
+`/quantize-for-hexagon-npu:quantize-for-hexagon-npu`.
+
+## Install in qGenie / Codex CLI
+
+qGenie's agent runs the Codex/Agent Skills format. Use its built-in installer from inside the agent:
+
+```text
+$skill-installer install --repo rmouro/quantize-for-hexagon-npu --path skills/quantize-for-hexagon-npu
+```
+
+This copies the skill into `~/.config/qgenie-cli/agent/skills/quantize-for-hexagon-npu/` (restart the
+agent to pick it up), then trigger it with `$quantize-for-hexagon-npu`. Manual alternative: copy
+`skills/quantize-for-hexagon-npu/` into that skills directory.
+
+## What it is opinionated about
+
+- **Pick a route deliberately.** AI Hub for speed and AIMET-grade PTQ, QAIRT native for offline
+  compiles and per-op encoding control, ORT QNN EP when you already have ONNX and want to iterate
+  on-device. The decision table is the first thing in `SKILL.md`.
+- **Read SoC targeting out of the SDK, not out of a table.** The `Qnn_SocModel_t` integer enum is
+  marked `@deprecated ... will no longer be updated` and has no entry for QCS8275 or QCS9075 — those
+  parts are targeted by SoC *name string*. `soc-targets.md` gives the commands to enumerate both from
+  your own install, and explains why 67/82/77 keep appearing for the Dragonwing EVKs (family aliasing,
+  not a bug).
+- **For transformers, the lever is quantizing MatMuls only** — not the bit width. Naive MinMax over
+  all op types collapsed a measured DiT to cos 0.85; MatMul-only reached 0.999921 against the fp32
+  ONNX reference's own 0.999922. The `±inf` attention mask is the root cause, and it corrupts silently.
+- **Verify placement; don't assume it.** `sess.get_providers()` proves nothing. Sessions were observed
+  to "succeed" with every node on CPU after QNN device creation had already failed.
+- **Gate on cosine *and* max-abs-error.** Cosine is scale-invariant and masks localized blow-ups — a
+  measured component passed at cos 0.9918 while carrying maxErr 21.
+
+## Provenance and caveats
+
+Distilled from bring-ups on QCS8275 (v75), QCS9075 (v73) and SA8797P (v81), then reconciled against
+QAIRT 2.46.0.260424, `qai-hub` 0.52.0 / `qai-hub-models` 0.58.0, the AI Hub documentation, and
+ONNX Runtime source.
+
+- Numbers labelled **measured** come from one board and one SDK/ORT version. They are existence
+  proofs, not specifications — re-measure on your part. Several are explicitly marked `n=1`.
+- Flag names, defaults and schema keys were verified against a QAIRT 2.46 install. Anything
+  version-sensitive is marked `(verify for your SDK version)` rather than dropped.
+- Where a claim is unresolved or a vendor doc contradicts the shipped tool, the skill says so instead
+  of picking a side silently.

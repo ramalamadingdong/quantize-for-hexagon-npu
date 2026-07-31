@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "quantize-for-hexagon-npu",
+  "version": "0.1.0",
+  "description": "Quantize and compile neural networks for the Qualcomm Hexagon NPU (HTP): AI Hub cloud jobs, the local QAIRT/QNN toolchain, or ONNX Runtime's QNN EP with EPContext caching — plus SoC targeting, calibration, accuracy debugging, and error-string-keyed pitfalls.",
+  "author": {
+    "name": "rmouro"
+  },
+  "keywords": ["qualcomm", "hexagon", "htp", "npu", "qnn", "qairt", "quantization", "onnxruntime", "ai-hub", "dragonwing"]
+}
