@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Quantize and compile neural networks for the Qualcomm Hexagon NPU (HTP): AI Hub cloud jobs, the local QAIRT/QNN toolchain, or ONNX Runtime's QNN EP with EPContext caching — plus SoC targeting, calibration, accuracy debugging, and error-string-keyed pitfalls.",
   "author": {
-    "name": "rmouro"
+    "name": "ramalamadingdong"
   },
   "keywords": ["qualcomm", "hexagon", "htp", "npu", "qnn", "qairt", "quantization", "onnxruntime", "ai-hub", "dragonwing"]
 }

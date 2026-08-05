@@ -39,7 +39,7 @@ quantize-for-hexagon-npu/
 This repo is a marketplace. Add it once, then install the plugin:
 
 ```text
-/plugin marketplace add github.qualcomm.com/rmouro/quantize-for-hexagon-npu
+/plugin marketplace add github.com/ramalamadingdong/quantize-for-hexagon-npu
 /plugin install quantize-for-hexagon-npu@hexagon-npu
 ```
 
@@ -51,7 +51,7 @@ The skill auto-loads when you work on NPU quantization/compilation, or invoke it
 qGenie's agent runs the Codex/Agent Skills format. Use its built-in installer from inside the agent:
 
 ```text
-$skill-installer install --repo rmouro/quantize-for-hexagon-npu --path skills/quantize-for-hexagon-npu
+$skill-installer install --repo ramalamadingdong/quantize-for-hexagon-npu --path skills/quantize-for-hexagon-npu
 ```
 
 This copies the skill into `~/.config/qgenie-cli/agent/skills/quantize-for-hexagon-npu/` (restart the
