@@ -1,4 +1,4 @@
 interface:
   display_name: "Quantize for Hexagon NPU"
   short_description: "Quantize and compile a model to run on the Qualcomm Hexagon NPU (HTP)"
-  default_prompt: "Use $quantize-for-hexagon-npu to pick a compile route, quantize my ONNX model, and get it running on the HTP"
+  default_prompt: "Use $quantize-for-hexagon-npu to pick a compile route, quantize my ONNX model, get it running on the HTP, and close with an accuracy status (local parity plus board/AI Hub HTP accuracy when available)"

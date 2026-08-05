@@ -9,8 +9,10 @@ description: >-
   building .dlc / context-binary .bin / *_ctx.onnx artifacts, picking
   soc_model + dsp_arch/htp_arch, VTCM sizing, Genie LLM bundles, and debugging
   "runs on CPU instead of NPU", QNN 6001, 14001, INVALID_PROTOBUF, or accuracy
-  collapse after quantization. Targets Dragonwing IQ-8275 / IQ-9075 / RB3 Gen 2,
-  QCS/SA/SM chipsets, and Snapdragon HTP v68-v81.
+  collapse after quantization. The skill must plan and close an accuracy check:
+  export/preprocess/layout parity locally, then final deployed HTP accuracy on a
+  board or AI Hub when required. Targets Dragonwing IQ-8275 / IQ-9075 / RB3 Gen
+  2, QCS/SA/SM chipsets, and Snapdragon HTP v68-v81.
 ---
 
 # Quantize & compile models for Qualcomm Hexagon NPU (HTP)
@@ -18,6 +20,43 @@ description: >-
 Distilled from real bring-ups on QCS8275 (v75), QCS9075 (v73) and SA8797P (v81),
 plus the QAIRT 2.46 SDK, AI Hub docs, and ONNX Runtime source. Numbers labelled
 *measured* come from one board and one SDK version — re-measure on yours.
+
+## Non-negotiable: accuracy closure is part of the job
+
+When this skill is active, do **not** stop at "conversion succeeded" or "profiled
+on NPU". Treat accuracy as a deliverable with an explicit closure status.
+
+At the **start** of the work, ask or infer:
+
+- What reference matters: PyTorch/source model, fp32 ONNX, a golden output set, or
+  task-level metric?
+- What threshold matters: cosine, max-abs/relative error, top-k, mAP/IoU/RMSE,
+  simulator success rate, or domain-specific acceptance?
+- Whether a real target board is reachable over SSH/ADB, whether AI Hub inference
+  is allowed, or whether this is a **local-only** check.
+- The app IO contract for every artifact: input/output names, shape, dtype,
+  layout, normalization, and raw-file byte order.
+
+During the work, preserve enough artifacts to rerun accuracy: fixed-shape fp32
+ONNX, quantized/compiled artifact, calibration set, held-out parity inputs,
+preprocessing script, exact commands, SDK/ORT/AI Hub versions, and logs.
+
+At the **end**, always run the strongest check available and report one of:
+
+- **PASS** — thresholds met for the stated reference and runtime.
+- **FAIL** — thresholds missed; include the first failing metric and next action
+  (layout fix, bit-width escalation, per-op override, calibration change,
+  layerwise diff, etc.).
+- **UNPROVEN** — local parity was checked, but final deployed HTP numerics were
+  not proven because no board/AI Hub inference path was available. Say this
+  plainly; do not imply NPU accuracy from successful compile/profile alone.
+
+Final responses should include an `ACCURACY STATUS` block with: status, reference,
+runtime tested, metrics, IO contract, commands/log paths, and the remaining ask
+from the user if final HTP accuracy is still unproven.
+
+See [reference/accuracy-debug.md](reference/accuracy-debug.md) for the detailed
+closure protocol and local-vs-device decision tree.
 
 ## Pick a path
 
@@ -169,25 +208,41 @@ More: [reference/quantization-recipes.md](reference/quantization-recipes.md)
 
 ## Validate in this order
 
-Each step catches failures the next one hides.
+Each step catches failures the next one hides. Run this ladder automatically at
+handoff, stopping only where the environment makes the next rung impossible.
 
-1. **Split/graph-surgery parity, if any** — fp32 chain vs whole fp32 model must
+0. **IO-contract diff for every artifact** — record input/output name, shape,
+   dtype, layout, and normalization. Treat NHWC↔NCHW and fp32↔fp16 app IO changes
+   as accuracy risks even when byte counts match; raw files can be silently
+   scrambled.
+1. **Source/export parity** — PyTorch/source model vs fixed-shape fp32 ONNX. If
+   this fails, fix export or preprocessing before quantizing/compiling.
+2. **Split/graph-surgery parity, if any** — fp32 chain vs whole fp32 model must
    be cos ≈ **1.0** (measured 1.000000). Anything less is a wiring bug.
-2. **Host CPU, quantized vs golden** — gate on cosine **and** max-abs-error.
+3. **Host-runnable model parity** — fp32 ONNX vs QDQ ONNX, CPU-runnable DLC, or
+   any host executable representation. Gate on cosine **and** max-abs-error.
    Cosine is scale-invariant and masks localized blow-ups; that is exactly how
    the `maxErr 21` component passed at cos 0.9918. Report which reference you
    used: vs PyTorch/bf16 golden folds in export error (what deployment cares
-   about); vs the fp32 **ONNX** isolates pure quantization error. Never compare
-   the two against one threshold.
-3. **On device** — HTP fuses ops and uses its own accumulator widths. In
-   practice these matched closely (DiT 0.990 host → 0.9975 HTP), but re-measure.
-4. **Task-level** — gate on the statistic your consumer actually uses. A learned
+   about); vs the fp32 **ONNX** isolates pure quantization/conversion error.
+   Never compare the two against one threshold.
+4. **Deployed HTP runtime** — run the actual `.dlc`, context binary, or
+   `*_ctx.onnx` on a board, or submit an AI Hub inference job. This is required
+   for final NPU accuracy because HTP fuses ops and uses its own accumulator
+   widths. An x86 host cannot honestly prove deployed HTP numerics, and a
+   prepare/emulation path that produces no real outputs is not an accuracy run.
+5. **Task-level** — gate on the statistic your consumer actually uses. A learned
    CartPole policy had **0.25** max INT8 error on a ±1 action scale yet balanced
    for the full 500-step cap, because the controller is bang-bang and only the
    *sign* matters. Where magnitude is load-bearing, 0.25 is not free.
 
-Full ladder, layerwise diffing, and `qairt-accuracy-debugger`:
-[reference/accuracy-debug.md](reference/accuracy-debug.md)
+If only rungs 0-3 are possible, report **UNPROVEN for final HTP accuracy** and ask
+for a reachable board or permission to use AI Hub inference. Do not treat
+successful conversion, profiling, parameter/MAC equality, or "all ops placed on
+NPU" as an accuracy result.
+
+Full closure protocol, local-only checks, layerwise diffing, and
+`qairt-accuracy-debugger`: [reference/accuracy-debug.md](reference/accuracy-debug.md)
 
 ## When things break
 

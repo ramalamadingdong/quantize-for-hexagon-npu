@@ -1,5 +1,67 @@
 # Accuracy debugging
 
+## Accuracy closure protocol for agents
+
+Accuracy is not an optional follow-up. Whenever the skill quantizes, converts,
+compiles, changes preprocessing, changes app IO, or profiles a model, finish with
+an explicit accuracy status.
+
+### Decide what can be proven in this environment
+
+Use the strongest available rung:
+
+| Environment available | What to run | What you may claim |
+|---|---|---|
+| Local host only, fp32/source model runnable | Source/PyTorch vs fp32 ONNX; fp32 ONNX vs QDQ/host-runnable converted model; IO-contract diff | Export, preprocessing, layout, and host conversion parity only |
+| Local x86 host with QAIRT/QNN but no HTP board | Same as above; inspect DLC/context IO; optionally run CPU-runnable artifacts if the CPU backend accepts them | Still **not** final deployed HTP accuracy |
+| Physical target board reachable by SSH/ADB | Run actual deployed artifact on HTP and compare outputs against the held-out reference | Deployed HTP tensor accuracy for those samples |
+| AI Hub inference allowed | Submit inference on the compiled artifact/model and compare outputs | Deployed/cloud HTP accuracy for that target |
+
+Do **not** claim final NPU accuracy from any of these alone: successful compile,
+AI Hub profiling, op placement, equal parameter/MAC counts, x86 HTP prepare logs,
+or an x86 run path that produced no real outputs. If the HTP-targeted DLC/context
+will not run under the local CPU backend, say so and continue with ONNX/export/IO
+parity rather than forcing an invalid comparison.
+
+### Always diff the app IO contract
+
+Before comparing numbers, print a table for each artifact:
+
+```text
+artifact | input name/shape/dtype/layout | output name/shape/dtype/layout | notes
+```
+
+Flag these as high-risk until proven by a harness:
+
+- NHWC app IO vs NCHW app IO. The byte count can match while the image is
+  scrambled.
+- Float32 app IO vs Float16/native app IO. Decide whether the application casts
+  or the runtime casts.
+- Changed output layout, channel order, normalization, resize/crop, padding,
+  token dtype, mask dtype, or raw file order.
+
+For image models, create at least one deterministic test pattern in addition to
+real held-out samples (for example channel ramps or a checkerboard) so NCHW/NHWC
+or RGB/BGR swaps are visually/numerically obvious.
+
+### End every run with this block
+
+```text
+ACCURACY STATUS: PASS | FAIL | UNPROVEN
+Reference: <PyTorch/source | fp32 ONNX | golden files | task metric>
+Runtime tested: <CPU ORT | QNN CPU | board HTP | AI Hub HTP | not available>
+Artifacts compared: <paths / job ids>
+IO contract: <input/output names, shapes, dtypes, layouts for each artifact>
+Metrics: <cosine, max_abs, rtol/atol, task score, thresholds>
+Commands/logs: <repro commands and output paths>
+Conclusion: <what is proven>
+Next action/user ask: <only if FAIL or UNPROVEN>
+```
+
+If local checks pass but board/AI Hub is unavailable, the correct conclusion is:
+"local export/preprocess/layout parity passed; final deployed HTP accuracy is
+UNPROVEN until we run on a board or AI Hub inference."
+
 ## Gate on host CPU before touching the device
 
 Run the fp32 ONNX on `CPUExecutionProvider` as reference against the quantized

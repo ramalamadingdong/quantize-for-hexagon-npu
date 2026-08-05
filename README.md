@@ -80,6 +80,11 @@ agent to pick it up), then trigger it with `$quantize-for-hexagon-npu`. Manual a
   ONNX reference's own 0.999922. The `±inf` attention mask is the root cause, and it corrupts silently.
 - **Verify placement; don't assume it.** `sess.get_providers()` proves nothing. Sessions were observed
   to "succeed" with every node on CPU after QNN device creation had already failed.
+- **Accuracy closure is mandatory.** The skill tells the agent to plan accuracy at the start, preserve
+  held-out parity inputs and commands, diff every artifact's app IO contract, run the strongest
+  available check at handoff, and end with `ACCURACY STATUS: PASS | FAIL | UNPROVEN`. Local-only
+  export/preprocess/layout parity is useful, but final deployed HTP accuracy requires a board or AI Hub
+  inference.
 - **Gate on cosine *and* max-abs-error.** Cosine is scale-invariant and masks localized blow-ups — a
   measured component passed at cos 0.9918 while carrying maxErr 21.
 
