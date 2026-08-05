@@ -21,17 +21,62 @@ plus the QAIRT 2.46 SDK, AI Hub docs, and ONNX Runtime source. Numbers labelled
 
 ## Pick a path
 
-| Path | Use when | Avoid when |
-|---|---|---|
-| **A. AI Hub** (cloud) | Fast, validated artifacts; catalog model; you can upload weights; you want AIMET-grade PTQ or a W4A16 LLM | Weights are proprietary/gated; your SoC isn't an AI Hub device; you need an exact local QAIRT version |
-| **B. QAIRT native** (local) | Offline/air-gapped; per-op encoding overrides; `.dlc`; Genie/LLM bundles; a SoC AI Hub doesn't list | No x86_64 Linux host — the converters and quantizers are x86-only |
-| **C. ORT QNN EP** (local) | You already have ONNX; want to iterate on-device with no cloud/login; want EPContext caching | You need `.dlc`, Genie text generation, or per-op encoding control |
+**Default to Path B (QAIRT native) whenever the host can run it.** It is the
+vendor toolchain the other two are built on: fully offline, no account or upload,
+version-pinnable, and the only route that gives per-op encoding overrides, `.dlc`
+output, and Genie/LLM bundles. Fall back only for the specific reasons below.
 
-Paths compose: quantize on AI Hub, compile locally for an unsupported SoC.
+Check host support first — this decides the default:
 
-Details: [reference/aihub.md](reference/aihub.md) ·
-[reference/qairt.md](reference/qairt.md) ·
+```bash
+uname -srm            # QAIRT converters/quantizers ship for x86_64 Linux,
+                      # x86_64 Windows, and arm64x Windows — NOT aarch64 Linux
+```
+
+| Host | Default |
+|---|---|
+| **x86_64 Linux** | **Path B.** The best-supported combination. |
+| **x86_64 / arm64 Windows** | **Path B**, using `bin/x86_64-windows-msvc` or `bin/arm64x-windows-msvc`. |
+| **aarch64 Linux** (the board itself, an Arm Mac VM, Graviton) | Path C — no converter/quantizer binary exists for this ABI. Or cross-compile from an x86_64 host and copy the artifact over. |
+| **macOS** (any arch) | Path A or C — QAIRT ships no macOS host tools at all. |
+
+Then override the default only for these reasons:
+
+| Go with | When |
+|---|---|
+| **A. AI Hub** (cloud) | You want AIMET-grade PTQ without doing the work (its default `mse_minimizer` range scheme beats naive MinMax); a **W4A16 LLM**, which needs a 40–80 GB GPU locally; or a quick catalog-model artifact. Requires uploading weights and an account. |
+| **C. ORT QNN EP** (local) | You already have QDQ ONNX and just want it on the NPU; you want to iterate **on the board** with no x86 host; or you want EPContext caching to kill graph-prep time. |
+
+Avoid Path B when: the host isn't in the support table above; you need AIMET
+algorithms it doesn't expose locally (AdaRound/AMP/AutoQuant need
+`--use_aimet_quantizer` plus extra installs); or you want a W4A16 LLM and have no
+GPU.
+
+Paths compose — quantize on AI Hub, then compile locally with QAIRT for a SoC AI
+Hub doesn't list.
+
+Details: [reference/qairt.md](reference/qairt.md) ·
+[reference/aihub.md](reference/aihub.md) ·
 [reference/ort-qnn-ep.md](reference/ort-qnn-ep.md)
+
+## Get the SDK (Path B, first step)
+
+The download URL embeds a 4-part build id whose last field is the build **date**,
+and there is no listing API — so never hardcode a version. Resolve it:
+
+```bash
+scripts/fetch-latest-qairt.sh                      # print latest version + URL
+scripts/fetch-latest-qairt.sh --download ~/qairt   # fetch (~1.8 GB) and unzip
+```
+
+It asks AI Hub's `get_frameworks()` when a token is configured (one request,
+authoritative), else falls back to a parallel ranged-GET sweep needing no auth.
+Latest verified 2026-08-04: **2.48.0.260626**. Then:
+
+```bash
+export QAIRT_ROOT=~/qairt/qairt/2.48.0.260626   # archive extracts to qairt/<ver>/
+source "$QAIRT_ROOT/bin/envsetup.sh"
+```
 
 ## Rules that hold on every path
 

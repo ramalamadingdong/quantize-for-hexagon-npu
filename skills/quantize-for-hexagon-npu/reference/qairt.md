@@ -1,17 +1,54 @@
 # Path B — QAIRT native converter + quantizer (local, offline)
 
-## Get the SDK (no login, no QPM)
+**This is the default route** whenever the host can run the tools. See the host
+support table in SKILL.md; in short, converters/quantizers ship for **x86_64
+Linux, x86_64 Windows and arm64x Windows**, but *not* aarch64 Linux and not macOS.
+Confirm on your own install:
 
 ```bash
-VER=2.46.0.260424          # full 4-part build id, in BOTH places
+for d in "$QAIRT_SDK_ROOT"/bin/*/; do
+  n=$(ls "$d" 2>/dev/null | grep -cE '^qairt-(converter|quantizer)$')
+  [ "$n" -gt 0 ] && echo "host tools present: $(basename "$d")"
+done
+# 2.46.0.260424: x86_64-linux-clang, x86_64-windows-msvc, arm64x-windows-msvc
+```
+
+## Get the SDK (no login, no QPM)
+
+**Never hardcode a version.** The URL embeds a full 4-part build id whose last
+field is the build **date** (YYMMDD), and the endpoint is a plain object lookup
+with no listing API — a wrong key returns S3 `NoSuchKey`, and
+softwarecenter.qualcomm.com is a client-rendered SPA, so scraping it without a
+browser yields only the page shell. Use the bundled resolver:
+
+```bash
+scripts/fetch-latest-qairt.sh                      # print the latest version + URL
+scripts/fetch-latest-qairt.sh --download ~/qairt   # download (~1.8 GB) + unzip
+scripts/fetch-latest-qairt.sh --from 2.46          # start the sweep higher
+```
+
+Two strategies, cheapest first:
+
+1. **AI Hub `get_frameworks()`** — authoritative and one request, but needs a
+   configured `qai-hub` token. Note `full_version` carries a long build stamp
+   (`2.48.0.260626120635`) while the download path uses only its first 6 digits
+   (`2.48.0.260626`).
+2. **Ranged-GET sweep** — no auth. Walks minors down from a ceiling and fans a
+   minor's whole date window out through `xargs -P 24` (~0.3 s per probe, so the
+   cost is request *count*, not bandwidth).
+
+Latest verified 2026-08-04: **2.48.0.260626**. Doing it by hand:
+
+```bash
+VER=2.48.0.260626          # full 4-part build id, in BOTH places
 curl -L -O "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/$VER/v$VER.zip"
 unzip "v$VER.zip" && cd "qairt/$VER"        # extracts to qairt/<ver>/, NOT v<ver>/qairt
 export QAIRT_ROOT=$(pwd)
 source "$QAIRT_ROOT/bin/envsetup.sh"        # exports QAIRT_SDK_ROOT, PATH, PYTHONPATH, LD_LIBRARY_PATH
 ```
 
-301-redirects to apigwx-aws.qualcomm.com; ~1.8 GB. To discover a build suffix,
-use a **ranged GET** — a HEAD request 403s:
+301-redirects to apigwx-aws.qualcomm.com. To test whether a build id exists, use a
+**ranged GET** — a HEAD request 403s:
 
 ```bash
 curl -sL -r 0-100 -o /dev/null -w '%{http_code}\n' "<url>"   # 206 = exists, 404 = not
@@ -116,7 +153,7 @@ pathlib.Path("calib.txt").write_text("".join(f"{p}\n" for p in paths))
 ## The modern flow
 
 ```bash
-# 1. convert (x86 only). --target_backend defaults to HTP.
+# 1. convert (host tools only — see the ABI check above). --target_backend defaults to HTP.
 "$BIN/qairt-converter" -i model.onnx -o model.dlc \
   --source_model_input_shape 'obs' 1,48 \
   --target_backend HTP --target_soc_model qcs8275 \    # SoC NAME string, not an enum int

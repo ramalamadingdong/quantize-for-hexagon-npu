@@ -20,6 +20,8 @@ quantize-for-hexagon-npu/
     quantize-for-hexagon-npu/
       SKILL.md                        # decision guide + universal rules (auto-loads when relevant)
       agents/openai.yaml              # qGenie/Codex UI metadata (display name, prompt)
+      scripts/
+        fetch-latest-qairt.sh         # resolve + download the latest QAIRT SDK (no hardcoded version)
       reference/                      # loaded on demand
         aihub.md                      # Path A: AI Hub compile/quantize jobs, LLM + AIMET flow
         qairt.md                      # Path B: qairt-converter/quantizer, context binaries, HTP config
@@ -58,9 +60,16 @@ agent to pick it up), then trigger it with `$quantize-for-hexagon-npu`. Manual a
 
 ## What it is opinionated about
 
-- **Pick a route deliberately.** AI Hub for speed and AIMET-grade PTQ, QAIRT native for offline
-  compiles and per-op encoding control, ORT QNN EP when you already have ONNX and want to iterate
-  on-device. The decision table is the first thing in `SKILL.md`.
+- **QAIRT native is the default**, whenever the host can run it: it is the vendor toolchain the other
+  two routes are built on, fully offline, version-pinnable, and the only route giving per-op encoding
+  overrides, `.dlc` output, and Genie/LLM bundles. `SKILL.md` opens with a host-support table
+  (x86_64 Linux, x86_64/arm64 Windows — *not* aarch64 Linux, *not* macOS) and the specific reasons to
+  fall back to AI Hub (AIMET-grade PTQ, W4A16 LLMs needing a 40-80 GB GPU) or ORT QNN EP (already have
+  QDQ ONNX, want to iterate on the board, want EPContext caching).
+- **Never hardcode an SDK version.** `scripts/fetch-latest-qairt.sh` resolves the newest QAIRT build:
+  it asks AI Hub's `get_frameworks()` when a token is configured, else falls back to a parallel
+  ranged-GET sweep that needs no auth. The download URL embeds a build *date* and the endpoint has no
+  listing API, so a pinned version in a doc is guaranteed to go stale.
 - **Read SoC targeting out of the SDK, not out of a table.** The `Qnn_SocModel_t` integer enum is
   marked `@deprecated ... will no longer be updated` and has no entry for QCS8275 or QCS9075 — those
   parts are targeted by SoC *name string*. `soc-targets.md` gives the commands to enumerate both from
