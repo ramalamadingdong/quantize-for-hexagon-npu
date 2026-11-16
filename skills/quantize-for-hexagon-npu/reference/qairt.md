@@ -24,23 +24,26 @@ browser yields only the page shell. Use the bundled resolver:
 ```bash
 scripts/fetch-latest-qairt.sh                      # print the latest version + URL
 scripts/fetch-latest-qairt.sh --download ~/qairt   # download (~1.8 GB) + unzip
-scripts/fetch-latest-qairt.sh --from 2.46          # start the sweep higher
+scripts/fetch-latest-qairt.sh --from 2.46          # start the sweep elsewhere
 ```
 
-Two strategies, cheapest first:
+Two steps:
 
-1. **AI Hub `get_frameworks()`** — authoritative and one request, but needs a
-   configured `qai-hub` token. Note `full_version` carries a long build stamp
-   (`2.48.0.260626120635`) while the download path uses only its first 6 digits
-   (`2.48.0.260626`).
-2. **Ranged-GET sweep** — no auth. Walks minors down from a ceiling and fans a
-   minor's whole date window out through `xargs -P 24` (~0.3 s per probe, so the
-   cost is request *count*, not bandwidth).
+1. **AI Hub `get_frameworks()`** — one request, needs a configured `qai-hub`
+   token, and seeds the sweep floor. Note `full_version` carries a long build stamp
+   (`2.52.0.261104115025`) while the download path uses only its first 6 digits
+   (`2.52.0.261104`). AI Hub lags the download site (it offered 2.51 + 2.45 when
+   2.52 was already downloadable), so this answers "newest AI Hub accepts", not
+   "newest released" — the script prints both when they differ.
+2. **Ranged-GET sweep** — no auth. Walks minors *up* from a floor until two in a
+   row don't resolve (no ceiling to go stale) and fans each minor's date window
+   (this year + last) out through `xargs -P 24` (~0.3 s per probe, so the cost is
+   request *count*, not bandwidth; ~30 s from the default floor).
 
-Latest verified 2026-08-04: **2.48.0.260626**. Doing it by hand:
+Latest verified 2026-11-16: **2.52.0.261104**. Doing it by hand:
 
 ```bash
-VER=2.48.0.260626          # full 4-part build id, in BOTH places
+VER=2.52.0.261104          # full 4-part build id, in BOTH places
 curl -L -O "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/$VER/v$VER.zip"
 unzip "v$VER.zip" && cd "qairt/$VER"        # extracts to qairt/<ver>/, NOT v<ver>/qairt
 export QAIRT_ROOT=$(pwd)

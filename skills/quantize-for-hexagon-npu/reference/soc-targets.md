@@ -9,7 +9,9 @@ maintained surface and it covers current Dragonwing parts.
 
 **2. `soc_model` *integer*** — the `Qnn_SocModel_t` enum, used by
 `devices[].soc_model` in the HTP backend-extensions JSON and by ORT's `soc_model`
-provider option. `QnnTypes.h` marks it:
+provider option (ORT-QNN 2.x also accepts a family *name* such as `"SM8750"` for a
+non-exhaustive list of chips; whether `QCS8275`/`QCS9075` are on it is unverified,
+so fall back to `htp_arch`). `QnnTypes.h` marks it:
 
 ```c
 /**
@@ -125,10 +127,11 @@ groupings above as well-corroborated and don't extrapolate the method.)*
 - **Prebuilt bundles cannot be retargeted by editing JSON.** `soc_model` /
   `dsp_arch` are baked into each `.bin` at `qnn-context-binary-generator` time; the
   runtime HTP JSON only declares the *current* device.
-- **ORT `htp_arch` accepts only `"0"|"68"|"69"|"73"|"75"|"81"`** as of onnxruntime
-  main (2026-07) — **v79 is absent**, even though the SDK ships `hexagon-v79`.
-  Anything else logs a WARNING and leaves `QNN_HTP_DEVICE_ARCH_NONE`. Grep
-  `ParseHtpArchitecture` in your ORT source (verify for your version).
+- **ORT `htp_arch` accepts a fixed list.** The 1.x provider-bridge EP (onnxruntime
+  main, 2026-07) took only `"0"|"68"|"69"|"73"|"75"|"81"` — **no v79**. ORT-QNN
+  2.x documents `68|69|73|75|79|81`, and a comma-separated list triggers multi-SoC
+  FCB compilation. A value outside the list logs a WARNING and leaves
+  `QNN_HTP_DEVICE_ARCH_NONE`, so check your EP's `ParseHtpArchitecture`.
 - On QCS8275, ORT requires `htp_arch:"75"` explicitly or device creation fails
   with `QNN_DEVICE_ERROR_INVALID_CONFIG`.
 
@@ -149,7 +152,9 @@ only `vtcm_mb: 2`.
 
 `"device_id": 0|1` inside `devices[]` of `htp_backend_ext_config.json`, documented
 for the **IQ-9075 EVK only** ("only work on the IQ-9075 EVK as it has dual NPUs";
-RB3 Gen 2 and RUBIK Pi 3 excluded).
+RB3 Gen 2 and RUBIK Pi 3 excluded). On the IQ-9075 the QNN HTP verbose log prints
+`Detected Snapdragon SOC QCS9100 with 2 SOCs`: QCS9100 is the Lemans family alias
+(above), and "2 SOCs" is the two NPUs — expected, not a fault.
 
 ORT's separate `device_id` provider option is documented merely as "the device to
 use when setting `htp_arch`". On QCS8275, `device_id` 0/1/None all create a session

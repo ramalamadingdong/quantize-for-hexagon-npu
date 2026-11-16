@@ -9,6 +9,19 @@ qai-hub list-devices                               # never hardcode a device str
 qai-hub list-frameworks                            # which QAIRT versions the cloud accepts
 ```
 
+Two API changes since mid-2026 break older snippets:
+
+- **`--target_runtime qnn_context_binary` was removed on 2026-09-14.** A `.bin`
+  now comes from **compile to `qnn_dlc` → link job** (`submit_link_job`, or
+  `submit_compile_and_link_jobs` for both in one call). The `qai-hub-models`
+  CLI's `--target-runtime qnn_context_binary` still works; it links internally.
+- **`submit_profile_job` is deprecated** (client 0.56, 2026-09-28): it now
+  returns an `InferenceJob`. Use `submit_inference_job(..., profile=True)`, which
+  runs 100 iterations by default and can take your real inputs, so one job
+  measures latency *and* gives outputs for accuracy. `JobType.PROFILE` is an alias
+  of `JobType.INFERENCE`.
+
+
 Device names are SoC/marketing names, not EVK names — enumerate them:
 
 ```bash
@@ -40,17 +53,26 @@ matches only on NPU/Hexagon version.
 ```python
 import qai_hub as hub
 dev = hub.Device("QCS8275 (Proxy)")               # exact string from get_devices()
-job = hub.submit_compile_job(
-    model="policy_w8a8.onnx",                     # static-shape QDQ ONNX
+compile_jobs, link_job = hub.submit_compile_and_link_jobs(
+    models="policy_w8a8.onnx",                    # static-shape QDQ ONNX
     device=dev,
-    options="--target_runtime qnn_context_binary",  # tflite|qnn_dlc|onnx|precompiled_qnn_onnx
+    compile_options="",                           # per-model compile flags go here
 )
-assert job.wait().success, job.get_status()       # else get_target_model() AttributeErrors
-job.get_target_model().download("policy.bin")
+assert link_job.wait().success, link_job.get_status()  # else get_target_model() AttributeErrors
+link_job.get_target_model().download("policy.bin")
 ```
 
+Spelled out, that is `submit_compile_job(..., options="--target_runtime
+qnn_dlc")` followed by `submit_link_job([dlc_model], device=dev)`. Linking
+several DLCs into one link job gives a multi-graph context with **shared
+weights**; select a graph at inference with `--qnn_options
+context_enable_graphs=<name>`. To get an ORT-loadable `precompiled_qnn_onnx`,
+pass the link job's `.bin` to a plain `submit_compile_job(model=bin, device=dev)`
+with **no** options.
+
 This works in practice — a locally produced `onnxruntime.quantization` QDQ model
-compiled fine and yielded a `.bin` byte-identical in size to the EPContext one.
+compiled fine and yielded a `.bin` byte-identical in size to the EPContext one
+(measured with the pre-removal `qnn_context_binary` target).
 But it is **not the documented contract**: the quantize docs state AI Hub's own
 fake-quant ONNX is "the only ONNX quantization format" officially accepted as
 compile input, so a folded-int8 QDQ model may be rejected. If it is, run it
@@ -87,11 +109,13 @@ qjob = client.submit_quantize_job(
 assert qjob.wait().success
 q = qjob.get_target_model()
 
-# 3. compile for the target
+# 3. compile for the target: DLC, then link to a context binary
 cjob = client.submit_compile_job(model=q, device=dev,
-                                 options="--target_runtime qnn_context_binary")
+                                 options="--target_runtime qnn_dlc")
 assert cjob.wait().success
-cjob.get_target_model().download("model.bin")
+ljob = client.submit_link_job([cjob.get_target_model()], device=dev)
+assert ljob.wait().success
+ljob.get_target_model().download("model.bin")
 ```
 
 Signature: `submit_quantize_job(model, calibration_data,
@@ -131,9 +155,10 @@ Validate empirically.
 ## Compile-job options that matter
 
 - `--target_runtime`:
-  - `qnn_context_binary` — `.bin`, pre-optimized for **one SoC**, NPU-only.
   - `qnn_dlc` — **hardware-agnostic** and forward-compatible: a DLC built on one
-    SDK version is guaranteed to run on newer ones. The portable choice.
+    SDK version is guaranteed to run on newer ones. The portable choice, and the
+    input to a link job, which produces the `.bin` (pre-optimized for **one
+    SoC**, NPU-only). `qnn_context_binary` as a compile target is gone (above).
   - `precompiled_qnn_onnx` — an `.onnx` directory wrapping a context binary for
     ORT's QNN EP. Works across Android/Linux/Windows, performance equal to a raw
     context binary, and the intended vehicle for **>1 GB** models (LLMs, SD).
@@ -164,14 +189,18 @@ Validate empirically.
   `default_graph_htp_enable_weights_packing=true`.
   These replace the deprecated `--qnn_graph_name`,
   `--qnn_context_binary_vtcm`, `--qnn_context_binary_optimization_level`.
-- **Pin the SDK on both jobs**: `--compile-options="--qairt_version 2.45"
-  --profile-options="--qairt_version 2.45"`. Only versions from
-  `qai-hub list-frameworks` are accepted. Read the device's version with
+- **Pin the SDK on every job** (`qai-hub-models` CLI):
+  `--compile-options="--qairt_version 2.45" --profile-options="--qairt_version
+  2.45"`. Only versions from `qai-hub list-frameworks` are accepted, and the list
+  rotates: on 2026-10-12 it was **2.51** (default) plus **2.45** (long-lived),
+  with 2.47 already removed. A pin to a dropped version fails, so re-check before
+  re-running an old recipe. Read the device's version with
   `qnn-net-run --version` (the Dragonwing docs' `qairt-net-run` is a typo — no
   such binary ships).
 
-Profile with `hub.submit_profile_job(model=<compiled target model>, device=...)`
-on a **real** device, not `(Proxy)` — proxies match on NPU version only, so any
+Profile with `hub.submit_inference_job(model=<compiled target model>,
+device=..., inputs=<optional real data>, profile=True)` on a **real** device, not
+`(Proxy)` — proxies match on NPU version only, so any
 CPU/GPU fallback makes proxy latency unrepresentative. Options:
 `--dequantize_outputs` (default true), `--max_profiler_iterations` (default 100).
 
@@ -182,12 +211,15 @@ a `.data` (only when the ONNX uses external weights).
 ## qai-hub-models CLI (catalog models)
 
 ```bash
-pip install qai-hub-models
+pip install qai-hub-models            # full package; `pip install qai-hub-models-cli` is the
+                                      # lightweight browse/fetch-only CLI (same command name)
+qai-hub-models install <model_id>     # model-specific deps (0.66)
 qai-hub-models export <model_id> --precision w8a8 \
   --target-runtime=qnn_context_binary \
   --device="QCS8275 (Proxy)" \
   --compile-options="--qairt_version 2.46" --profile-options "--qairt_version 2.46"
 # artifacts: export_assets/<model>-qnn_context_binary-w8a8-<chipset>/<model>.bin
+# (export compiles to DLC and runs the link job for you)
 ```
 
 - Use the **`qai-hub-models export` CLI**;

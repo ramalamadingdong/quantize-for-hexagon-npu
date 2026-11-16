@@ -108,12 +108,13 @@ scripts/fetch-latest-qairt.sh                      # print latest version + URL
 scripts/fetch-latest-qairt.sh --download ~/qairt   # fetch (~1.8 GB) and unzip
 ```
 
-It asks AI Hub's `get_frameworks()` when a token is configured (one request,
-authoritative), else falls back to a parallel ranged-GET sweep needing no auth.
-Latest verified 2026-08-04: **2.48.0.260626**. Then:
+It walks minor versions upward with a parallel ranged-GET sweep (no auth),
+seeded from AI Hub's `get_frameworks()` when a token is configured — AI Hub lags
+the download site, so its answer is a floor, not the latest.
+Latest verified 2026-11-16: **2.52.0.261104**. Then:
 
 ```bash
-export QAIRT_ROOT=~/qairt/qairt/2.48.0.260626   # archive extracts to qairt/<ver>/
+export QAIRT_ROOT=~/qairt/qairt/2.52.0.261104   # archive extracts to qairt/<ver>/
 source "$QAIRT_ROOT/bin/envsetup.sh"
 ```
 
@@ -125,14 +126,17 @@ source "$QAIRT_ROOT/bin/envsetup.sh"
    python3 -m onnxruntime.tools.make_dynamic_shape_fixed in.onnx out.onnx \
      --input_name pixel_values --input_shape 1,3,224,224      # or --dim_param seq_len --dim_value 156
    ```
-2. **Float32 does not necessarily fall back to CPU.** ORT QNN EP's
-   `enable_htp_fp16_precision` defaults to `'1'`, so fp32 runs as fp16 *on HTP*
-   — it looks accelerated while being far slower than int8. Quantization buys
-   throughput, not file size (see rule 6).
+2. **Float32 does not necessarily fall back to CPU.** Since QAIRT 2.35, HTP
+   float ops run as fp16 on SoCs with float support, whatever ORT's
+   `enable_htp_fp16_precision` says (it no longer changes HTP precision). So an
+   fp32 model runs *on HTP* as fp16 — it looks accelerated while being far slower
+   than int8. Quantization buys throughput, not file size (see rule 6).
 3. **Compiled context binaries are not portable.** A `.bin` / `*_ctx.onnx` is
    locked to HTP arch + `soc_model` + QAIRT version. Portable: `.dlc` (no
    graph-prep cache), plain QDQ `.onnx`, `.tflite`. Runtime SDK must be **≥**
-   the SDK that prepared the binary — that direction only.
+   the SDK that prepared the binary — that direction only. (A Flexible Context
+   Binary packs several per-SoC contexts into one artifact — still one compiled
+   context per target, see [reference/ort-qnn-ep.md](reference/ort-qnn-ep.md).)
 4. **Confirm the SoC on the board itself**, because vendor scaffolds and sample
    configs routinely target a different part than the one in front of you.
    ```bash
@@ -254,6 +258,9 @@ The three you will hit first:
 - **Everything ran on CPU, session "succeeded"** → set
   `session.disable_cpu_ep_fallback=1` to make ORT raise at construction. Then
   confirm HTP specifically (that flag also passes with the QNN *CPU* backend).
+  With `onnxruntime-qnn` **2.x**, the 1.x `providers=[("QNNExecutionProvider",
+  …)]` form is silently CPU-only even after registering the plugin — use
+  `add_provider_for_devices`.
 - **`QNN graph execute error. Error code: 6001`** → generic HTP execute/resource
   failure, not a dedicated OOM code. Work it in order: VTCM exhaustion from
   co-resident contexts → a single graph too heavy (check `read_total_bytes`) →

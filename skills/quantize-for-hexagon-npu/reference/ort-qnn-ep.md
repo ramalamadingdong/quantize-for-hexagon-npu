@@ -2,17 +2,62 @@
 
 ## Install (aarch64 Linux)
 
-Pin the line you are documenting — the two ORT generations have different APIs:
+Pin the line you are documenting — the two generations have different APIs:
 
-- **`onnxruntime-qnn` 1.x on PyPI is Windows-only** (every wheel 1.17.3–1.24.3 is
-  `win_amd64` / `win_arm64`: ARM64 for inference, x64 for quantization).
-- manylinux aarch64 appears only in the **2.x** line —
-  `onnxruntime_qnn-2.4.0-cp3{11,12,13,14}-manylinux_2_34_aarch64.whl`,
-  `Requires-Python >=3.11`. `manylinux_2_34` means **glibc ≥ 2.34**, which rules
-  out older QLI/Yocto images. 2.x is a plugin-EP build — the provider
-  registration flow differs from the snippets below.
+- **2.x is the maintained line** (Qualcomm-owned, `github.com/onnxruntime/onnxruntime-qnn`;
+  2.8.0 on 2026-11-12, built against **QAIRT 2.52** and ORT 1.29, compatible
+  with ORT ≥ 1.24.1). It is a **plugin EP**: a separate package that loads
+  into a stock `pip install onnxruntime`. Wheels: `manylinux_2_34_aarch64`
+  (inference), `manylinux_2_35_x86_64` (AOT compile only, cannot execute),
+  `win_arm64`, `win_amd64`; `Requires-Python >=3.11`. `manylinux_2_34` means
+  **glibc ≥ 2.34** — fine on Ubuntu 24.04 Dragonwing images, rules out older
+  QLI/Yocto.
+- **1.x on PyPI is Windows-only** (every wheel 1.17.3–1.24.3 is `win_amd64` /
+  `win_arm64`). On aarch64 Linux the 1.x route is the Edge Impulse wheel below.
 
-Every example in this file is **1.x-shaped**. For that, use a pinned wheel:
+### 2.x (default where glibc ≥ 2.34)
+
+```bash
+python3.12 -m venv .venv && . .venv/bin/activate
+pip install onnxruntime onnxruntime-qnn          # pin both in anything you ship
+```
+
+The 2.x aarch64 wheel **bundles the QNN runtime**: `libQnnHtp.so`,
+`libQnnSystem.so`, `libQnnHtpPrepare.so`, `libQnnHtpV{68,69,73,75,79,81}Stub.so`
++ `…Skel.so`, `libGenie.so`, all from the QAIRT build it was made with. The EP
+warns whenever `ADSP_LIBRARY_PATH` is already set (`Using existing
+ADSP_LIBRARY_PATH setting of …, which may cause the HTP backend to fail`) — seen
+even when it pointed at the wheel directory, where it was harmless. If you set
+it, point it at the wheel dir so host stub and DSP skel come from the same build;
+mixing in system skels from a different QAIRT fails the build-id check.
+
+```python
+import onnxruntime as ort, onnxruntime_qnn as qnn_ep
+ort.register_execution_provider_library("QNNExecutionProvider", qnn_ep.get_library_path())
+devs = [d for d in ort.get_ep_devices() if d.ep_name == "QNNExecutionProvider"]
+so = ort.SessionOptions()
+so.add_provider_for_devices(devs, {"backend_type": "htp"})   # same option keys as 1.x
+sess = ort.InferenceSession("model.onnx", sess_options=so)
+...
+del sess
+ort.unregister_execution_provider_library("QNNExecutionProvider")
+```
+
+Measured on an IQ-9075 (ORT 1.30 + onnxruntime-qnn 2.6.0, Docker on Ubuntu
+24.04): this loads AI Hub `precompiled_qnn_onnx` artifacts on HTP, and the skel
+build-id check passes against the wheel's skel.
+
+**Under 2.x, only `add_provider_for_devices` attaches the EP.** Verified on x86_64
+(ORT 1.32 + onnxruntime-qnn 2.8.0): even *after* registration, the 1.x
+`providers=[("QNNExecutionProvider", opts)]` form silently gives a CPU-only
+session (`get_providers()` → `['CPUExecutionProvider']`), and
+`so.add_provider("QNNExecutionProvider", …)` raises `Provider configuration is
+not supported`. The examples below are written 1.x-style; under 2.x, pass the
+same `opts` dict to `add_provider_for_devices`. The maintained option
+reference is `docs/execution_providers/QNN-ExecutionProvider.md` in the 2.x
+repo, not the onnxruntime.ai page.
+
+### 1.x (glibc < 2.34, or code already written against 1.x)
 
 ```bash
 sudo apt install -y python3.12-venv python3-full     # else: ensurepip is not available
@@ -27,7 +72,7 @@ filename and rejects `ortqnn.whl` with `Invalid wheel filename (wrong number of
 parts)`. Use `wget` without `-O`. Other ORT/Python combos: build from
 `edgeimpulse/onnxruntime-qnn-linux-aarch64`.
 
-The aarch64 wheel does **not** bundle the QNN backend libs:
+This 1.x wheel does **not** bundle the QNN backend libs:
 
 ```bash
 sudo apt-get install -s libqnn1 qairt-libs qairt-dsp-binaries   # -s first: expect "0 upgraded"
@@ -39,6 +84,7 @@ fixes device-create 14001 — see [pitfalls.md](pitfalls.md).)*
 
 ## Device-side libraries and env
 
+For 1.x or for system-installed QNN libs (the 2.x wheel supplies its own, above).
 On `LD_LIBRARY_PATH`: `libQnnHtp.so`, `libQnnSystem.so`, `libQnnHtpV<NN>Stub.so`,
 `libcdsprpc.so`. On `ADSP_LIBRARY_PATH`: the directory that actually contains
 `libQnnHtpV<NN>Skel.so` and its `.cat`.
@@ -87,8 +133,9 @@ sess = ort.InferenceSession("model_w8a8.onnx", sess_options=so,
   session creation: `INVALID_ARGUMENT : Conflicting session configuration`.
 - `htp_performance_mode`: `burst|balanced|default|high_performance|
   high_power_saver|low_balanced|low_power_saver|power_saver|
-  sustained_high_performance` (default `default`), plus an undocumented
-  `extreme_power_saver`. An unrecognized value only logs `Htp performance mode
+  sustained_high_performance|extreme_power_saver` (default `default`). 2.x also
+  takes it per run: `run_options.add_run_config_entry("qnn.perf_mode", "burst")`.
+  An unrecognized value only logs `Htp performance mode
   not valid.` at WARNING and keeps the default — verify your spelling.
 - `htp_graph_finalization_optimization_mode`: `""|"0"` (default), `"1"` faster
   prep/less optimal, `"2"`, `"3"` longest prep/most optimal. Applied at graph
@@ -97,23 +144,48 @@ sess = ort.InferenceSession("model_w8a8.onnx", sess_options=so,
 - `vtcm_mb` is parsed with unguarded `std::stoi` and applied only if > 0 (`<= 0`
   logs `Skip invalid vtcm_mb`; non-numeric throws). It is also a graph config, so
   it gets **baked into the binary**.
-- `enable_htp_fp16_precision` defaults to **enabled**, running fp32 as fp16 on
-  HTP. Set `"0"` when debugging fp32-vs-NPU numerics.
+- `enable_htp_fp16_precision` no longer controls anything that matters: since
+  QAIRT 2.35, HTP float ops use fp16 math on float-capable SoCs **regardless** of
+  it (1.x defaulted it to `'1'`, 2.x to `'0'`), and `'0'` does **not** give you
+  fp32 on HTP. To debug fp32-vs-NPU numerics, compare against CPU EP instead.
+  `htp_bf16_enable` is the separate BF16 switch.
 - `offload_graph_io_quantization` defaults to **true** (graph-input Q / output DQ
   left to CPU). Setting `disable_cpu_ep_fallback` **forcibly resets it to false**,
   logged only at INFO — so the full-HTP gate silently moves I/O quant onto QNN and
   can change latency. Benchmark with your shipping flag combination.
-- `soc_model` is a decimal string (default `"0"` = unknown). Set it together with
-  `htp_arch` when compiling off-device.
+- `soc_model` is a string (default `"0"` = unknown): a numeric ID, or in 2.x a
+  chip-family **name** (`"SM8750"`, case-insensitive) for a non-exhaustive list of
+  well-known chips — anything unrecognized needs the number. Set it together with
+  `htp_arch` when compiling off-device. A comma-separated list (`"60,88"`) turns
+  on multi-SoC FCB compilation (below).
 - `htp_bf16_enable` is gated in `GetCapability`: with `soc_model` unknown or < 88,
   QNN EP returns **zero** assigned nodes and only WARNs (`BF16 mode is enabled but
   ...`) — the whole model silently runs on CPU.
-- Undocumented but real (verify against your ORT commit; not API-stable):
-  `enable_htp_spill_fill_buffer`, `htp_bf16_enable`,
-  `enable_vtcm_backup_buffer_sharing`, `disable_file_mapped_weights`,
-  `dump_json_qnn_graph` + `json_qnn_graph_dir`, `dump_qnn_ir_dlc` (+ `_dir`,
-  `qnn_ir_backend_path`), `op_packages`, `extended_udma`, `skip_qnn_version_check`,
+- Now documented in the 2.x option reference: `enable_htp_spill_fill_buffer`,
+  `htp_bf16_enable`, `enable_vtcm_backup_buffer_sharing` (prefer its alias
+  `htp_share_resource_optimization`), `disable_file_mapped_weights` (Windows
+  ARM64 only), `qnn_ir_backend_path`, `op_affinity` (JSON pinning op types to a
+  backend), `htp_num_cores`, `framework_op_trace` (writes `qnn_op_trace.json`,
+  an ONNX-op → QNN-op map including unsupported ops; schema moved
+  `compilation_target` under `soc_traces[]`). Still worth verifying against your
+  build: `dump_json_qnn_graph` + `json_qnn_graph_dir`, `dump_qnn_ir_dlc`,
+  `op_packages`, `extended_udma`, `skip_qnn_version_check`,
   `enable_htp_shared_memory_allocator`.
+- **Large-context levers (2.x):**
+  - `htp_reused_io_limit_mb` (QAIRT ≥ 2.45): tells HTP how much I/O is really
+    live at once. By default QNN assumes every graph's I/O is resident, inflates
+    the PD-size estimate, and can fail PD placement with error **1002**.
+  - `enable_htp_prepare_and_load=1`: compile and reload the context in one
+    session, "bypass[ing] the single process-domain (PD) memory limit imposed by
+    the JIT flow". Add `ep.context_enable=1` to also persist `_ctx.onnx` + `.bin`.
+    Mutually exclusive with `enable_htp_prepare_only`, and ignored with a warning
+    on an already-compiled `_ctx.onnx`.
+  - `enable_htp_prepare_only=1` (needs `ep.context_enable=1`): compile and
+    write the context, skip inference.
+  - `enable_htp_graph_splitting=1` (runtime QAIRT ≥ 2.49, or context creation
+    *fails*): the backend splits the graph into separately-prepared subgraphs to
+    cut prepare time (`GPE_KWAY_PARTITIONS`, default 8). No effect on an
+    already-compiled binary.
 - `op_packages` format is
   `<OpType>:<PackagePath>:<InterfaceSymbolName>[:<Target>]`, comma-separated.
   Parsing is lenient — a wrong field count is skipped with only a WARNING
@@ -122,8 +194,9 @@ sess = ort.InferenceSession("model_w8a8.onnx", sess_options=so,
 - HTP subsystem restart (SSR) surfaces as `StatusCode::ENGINE_ERROR` from `Run`.
   Recovery is **recreating the InferenceSession**, not retrying `Run`.
 
-**The ORT QNN EP docs' own examples are broken** (`QNN-ExecutionProvider.md`
-L491-501, L539-549): `provider_options = [ "k": v, ... ]` is not valid Python, and
+**The legacy onnxruntime.ai QNN EP page's examples were broken** (as of 2026-07,
+`QNN-ExecutionProvider.md` L491-501, L539-549 in the microsoft/onnxruntime docs;
+the maintained 2.x copy no longer has the typo): `provider_options = [ "k": v, ... ]` is not valid Python, and
 they misspell VTCM as `"vtcm_mv"`. QNN EP does **no** unknown-key validation, so
 fix the brackets, keep the typo, and VTCM stays unset with no warning. Cross-check
 names against the `QNN_*` string constants in `qnn_execution_provider.cc`.
@@ -251,20 +324,32 @@ assert np.allclose(a, b, atol=1e-5), np.abs(a - b).max()
   entirely on the ORT CPU EP, looking successful with no acceleration and no
   context binary.
 - Generate on the aarch64 device with HTP, or on an x86_64 host with the x86_64
-  QNN libs (which cannot execute). When compiling off-device, **pin `soc_model`
+  QNN libs (which cannot execute) — the 2.x `manylinux_2_35_x86_64` wheel ships
+  them, so an x86 AOT host no longer needs a separate QAIRT install. When compiling off-device, **pin `soc_model`
   and `htp_arch` explicitly** — defaults are unknown/none and the binary may not
   load.
 - ORT ≥ 1.23 has a first-class API:
-  `sess_options.add_provider("QNNExecutionProvider", {...})` then
-  `onnxruntime.ModelCompiler(sess_options, "in.onnx",
+  `sess_options.add_provider("QNNExecutionProvider", {...})` (1.x) or
+  `sess_options.add_provider_for_devices(devs, {...})` (2.x — `add_provider`
+  raises there), then `onnxruntime.ModelCompiler(sess_options, "in.onnx",
   embed_compiled_data_into_model=False).compile_to_file("out_ctx.onnx")`. The
   C/C++ `OrtCompileApi` landed in 1.22; the Python wrapper did not exist before
-  1.23.
+  1.23. Verified with 2.8.0 on a bare x86_64 host (no QAIRT installed,
+  `htp_arch: "75"`): writes `out_ctx.onnx` + `out_ctx_qnn.bin`.
 - Weight sharing across models is an offline flow requiring an **x86_64** host:
   `ep.share_ep_contexts=1` on every session in the group plus
   `ep.stop_share_ep_contexts=1` on the last (which writes
   `[model1_name]_[ep].bin`). Or wrap a `qnn-context-binary-generator` output with
   `onnxruntime/python/tools/qnn/gen_qnn_ctx_onnx_model.py`.
+- **Flexible Context Binary (FCB) / multi-SoC** (2.x, QAIRT ≥ 2.48, x86_64 host
+  only): give `soc_model` and/or `htp_arch` a comma-separated list
+  (`"htp_arch": "73,81", "soc_model": "60,88"`, same length if both are given),
+  with `ep.context_enable=1`. One EPContext model then carries one compiled
+  context per listed SoC, packed into a DLC. It is still a context per target
+  rather than a portable binary. Not combinable with `ep.share_ep_contexts`.
+  Prune targets for shipping with
+  `python -m onnxruntime_qnn.deploy_multi_soc_ep_context --input_bin …_qnn.bin --list`
+  (Python 3.12 wheel only — the helper extension ships only there).
 
 **Why bother:** first-load HTP graph prep dominates startup. Measured on QCS8275
 / v75 with ORT-QNN 1.23 on specific INT8/INT16 graphs: **ViT 147 s, DiT ~150 s,

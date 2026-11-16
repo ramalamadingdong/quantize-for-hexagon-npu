@@ -39,7 +39,7 @@ quantize-for-hexagon-npu/
 This repo is a marketplace. Add it once, then install the plugin:
 
 ```text
-/plugin marketplace add github.com/ramalamadingdong/quantize-for-hexagon-npu
+/plugin marketplace add ramalamadingdong/quantize-for-hexagon-npu
 /plugin install quantize-for-hexagon-npu@hexagon-npu
 ```
 
@@ -67,8 +67,8 @@ agent to pick it up), then trigger it with `$quantize-for-hexagon-npu`. Manual a
   fall back to AI Hub (AIMET-grade PTQ, W4A16 LLMs needing a 40-80 GB GPU) or ORT QNN EP (already have
   QDQ ONNX, want to iterate on the board, want EPContext caching).
 - **Never hardcode an SDK version.** `scripts/fetch-latest-qairt.sh` resolves the newest QAIRT build:
-  it asks AI Hub's `get_frameworks()` when a token is configured, else falls back to a parallel
-  ranged-GET sweep that needs no auth. The download URL embeds a build *date* and the endpoint has no
+  a parallel ranged-GET sweep that needs no auth walks minor versions upward (seeded from AI Hub's
+  `get_frameworks()` when a token is configured — AI Hub lags the download site, so it is only a floor). The download URL embeds a build *date* and the endpoint has no
   listing API, so a pinned version in a doc is guaranteed to go stale.
 - **Read SoC targeting out of the SDK, not out of a table.** The `Qnn_SocModel_t` integer enum is
   marked `@deprecated ... will no longer be updated` and has no entry for QCS8275 or QCS9075 — those
@@ -92,7 +92,10 @@ agent to pick it up), then trigger it with `$quantize-for-hexagon-npu`. Manual a
 
 Distilled from bring-ups on QCS8275 (v75), QCS9075 (v73) and SA8797P (v81), then reconciled against
 QAIRT 2.46.0.260424, `qai-hub` 0.52.0 / `qai-hub-models` 0.58.0, the AI Hub documentation, and
-ONNX Runtime source.
+ONNX Runtime source. Refreshed 2026-11-16 against QAIRT 2.52.0.261104, `onnxruntime-qnn` 2.8.0
+(plugin EP; registration + AOT compile checked on an x86_64 host), `qai-hub` 0.58.0 /
+`qai-hub-models` 0.66.0 and the AI Hub release notes (compile → link replaces the removed
+`qnn_context_binary` target; `submit_profile_job` → `submit_inference_job(profile=True)`).
 
 - Numbers labelled **measured** come from one board and one SDK/ORT version. They are existence
   proofs, not specifications — re-measure on your part. Several are explicitly marked `n=1`.

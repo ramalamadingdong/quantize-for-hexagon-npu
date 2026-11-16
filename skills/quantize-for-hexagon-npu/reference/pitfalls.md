@@ -200,6 +200,39 @@ exceeded the near-memory IOVA window. → Split into parts ≤ ~1.5 GB. AI Hub s
 Qwen3-8B W4A16 as **5 parts, largest 1.55 GB, with no `extended_udma`** —
 splitting, not far mapping, is the primary remedy.
 
+**`Context create from binary failed for deviceId 0 coreId 0 pdId N for context
+1, err 1002` / `Could not allocate persistent weights buffer!` / `Mapping buffer
+fd N to FastRpc failed on domain 3`, ending in `QNN_COMMON_ERROR_MEM_ALLOC`** →
+the context doesn't fit in a DSP process domain (PD). QNN tries the PDs in turn
+(`PD 0 chosen for context 1, estimated future space on pd ~2143.74 MB` →
+`PD 2 chosen …` → …), so per-PD failures in a log that still ends in
+`QnnContext_createFromBinary done successfully` are noise. Measured on an
+IQ-9075 (QAIRT 2.50, ORT-QNN 2.6.0, n=1 model): an AI Hub **float**
+`precompiled_qnn_onnx` SAM3 backbone needed ~2.14 GB of PD space, 886 MB of
+it spill-fill, and only PD 1 of the four ever loaded it. Read the
+`estimated PD size ~… including nonSharedWeight … I/O … runlist … spillfill`
+line at verbose to see which term dominates. → Quantize (float spill-fill is
+the usual culprit) or split to ≤ ~1.5 GB per context; try ORT-QNN 2.x
+`htp_reused_io_limit_mb` when the I/O term is inflated, or
+`enable_htp_prepare_and_load` for the JIT single-PD limit (see
+[ort-qnn-ep.md](ort-qnn-ep.md)); on dual-NPU parts try `device_id 1`
+(untested). Also check for leaked buffers (next entry) — every observed
+failure happened while leaked copies were resident.
+
+**Loads that worked start failing after a crash or `docker stop`** → a process
+killed with **SIGKILL** while holding QNN contexts never runs `QnnContext_free`,
+and its FastRPC dma-bufs stay attached to `compute-cb@N` **until reboot** (on
+the IQ-9075, kernel 6.8.0-1089-qcom: every leaked set survived; a clean exit
+freed everything). Typical trigger: a container teardown SIGKILLs a child whose
+parent already exited on SIGTERM. Count them:
+```bash
+sudo grep -c 'NSW:' /sys/kernel/debug/dma_buf/bufinfo    # QNN non-shared weights
+sudo tail -1 /sys/kernel/debug/dma_buf/bufinfo           # "Total N objects, B bytes"
+```
+Compare against a fresh-boot baseline (no `NSW:` entries). → Free sessions and
+exit cleanly on SIGTERM, run containers with `--init` so signals reach the
+inference process, and reboot to reclaim already-leaked buffers.
+
 **`Extended UDMA not enabled or not supported by platform for graph <id>, skipping
 far mapping allocation`** → far mapping off. `extended_udma` is **v81+**,
 **prepare-time only** (`Ignoring context config to use extended UDMA which is
@@ -244,9 +277,10 @@ log.
 **Session "succeeds" but nothing ran on the NPU** → see "Prove it ran on the NPU"
 in [ort-qnn-ep.md](ort-qnn-ep.md). `get_providers()` proves nothing.
 
-**`SyntaxError` pasting the ORT QNN EP docs' profiling example** →
+**`SyntaxError` pasting the legacy onnxruntime.ai QNN EP profiling example** →
 `provider_options = [ "k": v, ... ]` is not valid Python, and the same examples
-misspell `vtcm_mb` as `"vtcm_mv"`. Fix the brackets, keep the typo, and the option
+misspell `vtcm_mb` as `"vtcm_mv"` (the maintained 2.x doc in
+`onnxruntime/onnxruntime-qnn` is fixed). Fix the brackets, keep the typo, and the option
 is **silently ignored** — QNN EP does no unknown-key validation.
 
 **`ERROR: <file> is not a valid wheel filename` / `Invalid wheel filename (wrong
@@ -257,10 +291,13 @@ PEP-427 filename; you renamed the wheel. → `wget` without `-O`.
 `sudo apt install -y python3.12-venv python3-full`, then make a venv. Don't reach
 for `--break-system-packages`.
 
-**`pip install onnxruntime-qnn` gives you a Windows wheel, or nothing** → the 1.x
-line on PyPI is Windows-only; aarch64 Linux exists only in 2.x
-(`manylinux_2_34`, so glibc ≥ 2.34, Python ≥ 3.11) and is a plugin-EP build with a
-different registration flow. → Pin the line you're coding against.
+**`pip install onnxruntime-qnn==1.x` gives you a Windows wheel, or nothing** → the
+1.x line on PyPI is Windows-only; Linux wheels exist only in 2.x (aarch64
+`manylinux_2_34`, so glibc ≥ 2.34; x86_64 for AOT only; Python ≥ 3.11). 2.x is
+a plugin EP: 1.x-style `providers=[("QNNExecutionProvider", …)]` against a stock
+`onnxruntime` only warns that the provider isn't available and runs on **CPU**.
+Add `register_execution_provider_library` + `add_provider_for_devices` (see
+[ort-qnn-ep.md](ort-qnn-ep.md)), and gate with `disable_cpu_ep_fallback`. → Pin the line you're coding against.
 
 ## Portability confusion
 

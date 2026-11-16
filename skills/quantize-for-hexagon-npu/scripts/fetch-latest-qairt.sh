@@ -3,36 +3,37 @@
 #
 # Why this exists: the download URL embeds a full 4-part build id whose last field is
 # the build DATE (YYMMDD), e.g.
-#   .../Qualcomm_AI_Runtime_Community/All/2.48.0.260626/v2.48.0.260626.zip
+#   .../Qualcomm_AI_Runtime_Community/All/2.52.0.261104/v2.52.0.261104.zip
 # There is no listing API — the path is a plain object lookup (a bad key returns S3
 # NoSuchKey), and softwarecenter.qualcomm.com itself is a client-rendered SPA, so
 # scraping it without a browser yields only the page shell. Hardcoding a version in a
 # doc guarantees it goes stale. So: discover, then verify.
 #
-# Strategy, cheapest first:
+# Strategy:
 #   1. If `qai-hub` is installed AND configured, ask AI Hub which QAIRT versions it
-#      accepts (hub.get_frameworks()). Authoritative and one request. Needs a token.
-#   2. Otherwise sweep minor versions and build dates with ranged GETs until a hit.
-#      No auth, no browser.
+#      accepts (hub.get_frameworks()) and use the newest as the sweep floor. AI Hub
+#      lags the download site (2.51 vs 2.52 on 2026-11-16), so it is a floor, not
+#      the answer.
+#   2. Sweep minor versions and build dates with ranged GETs, walking UP from the
+#      floor until minors stop resolving. No auth, no browser, no ceiling.
 #
 # Usage:
 #   ./fetch-latest-qairt.sh                 # print the latest resolved version + URL
 #   ./fetch-latest-qairt.sh --download DIR  # also download and unzip into DIR
-#   ./fetch-latest-qairt.sh --from 2.46     # start the sweep at minor 46 (default 45)
+#   ./fetch-latest-qairt.sh --from 2.46     # start the sweep at minor 46 (default 52)
 #
-# Verified 2026-08-04: latest = 2.48.0.260626.
+# Verified 2026-11-16: latest = 2.52.0.261104.
 set -uo pipefail
 
 BASE="https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All"
-FROM_MINOR=45          # 2.45 is the oldest release worth defaulting to
-MAX_MINOR=55           # sanity ceiling; raise if a newer minor ever exists
+FROM_MINOR=52          # newest minor known to exist; a stale floor only costs time
 DOWNLOAD_DIR=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --download) DOWNLOAD_DIR="${2:?--download needs a target dir}"; shift 2 ;;
     --from)     FROM_MINOR="${2#2.}"; FROM_MINOR="${FROM_MINOR%%.*}"; shift 2 ;;
-    -h|--help)  sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help)  sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -61,7 +62,7 @@ if not vs:
     sys.exit(1)
 def key(v): return [int(x) for x in v.split(".")[:3]]
 best = max(vs, key=key)
-# full_version carries a long build stamp (2.48.0.260626120635); the download path
+# full_version carries a long build stamp (2.52.0.261104115025); the download path
 # uses only the first 6 digits of it (the YYMMDD date).
 p = best.split(".")
 print("%s.%s.%s.%s" % (p[0], p[1], p[2], p[3][:6]))
@@ -74,13 +75,15 @@ PY
 # serially that is minutes. Fan out with xargs -P instead: one minor's full
 # ~365-day window resolves in a couple of seconds.
 #
-# Search newest-first and stop at the first minor that has no build at all
-# (allowing one gap, since minors are occasionally skipped).
+# Walk up from FROM_MINOR and stop after two consecutive minors with no build
+# (one gap tolerated, since minors are occasionally skipped). Build dates can't be
+# in the future, so only this year and last year are probed.
 probe_minor() {
   # echo the newest full version found for minor $1, or nothing.
-  local minor="$1" y m d
+  local minor="$1" y m d this last
+  this=$(date +%y); last=$(printf '%02d' $(( 10#$this - 1 )))
   {
-    for y in 27 26 25; do
+    for y in "$this" "$last"; do
       for m in 12 11 10 09 08 07 06 05 04 03 02 01; do
         for d in $(seq -w 1 31); do echo "2.${minor}.0.${y}${m}${d}"; done
       done
@@ -91,33 +94,34 @@ probe_minor() {
 }
 
 from_sweep() {
-  # Walk DOWN from the ceiling and return the first (= newest) minor that resolves.
-  # No skipping: a jump risks stepping over the newest release, which is the one
-  # thing this function exists to find.
-  local minor hit
-  for (( minor=MAX_MINOR; minor>=FROM_MINOR; minor-- )); do
+  # Walk UP from the floor, keeping the newest hit. There is deliberately no
+  # ceiling: a hardcoded one silently caps the answer once releases pass it.
+  local minor hit best="" misses=0
+  for (( minor=FROM_MINOR; misses<2; minor++ )); do
     hit="$(probe_minor "$minor")"
-    [ -n "$hit" ] && { echo "$hit"; return 0; }
+    if [ -n "$hit" ]; then best="$hit"; misses=0; else misses=$((misses + 1)); fi
   done
+  [ -n "$best" ] && { echo "$best"; return 0; }
   return 1
 }
 
-VER="$(from_aihub || true)"
-SRC="AI Hub get_frameworks()"
-if [ -n "${VER:-}" ] && exists "$VER"; then
-  :
-else
-  [ -n "${VER:-}" ] && echo "note: AI Hub reported $VER but it is not downloadable; falling back to sweep" >&2
-  echo "resolving latest QAIRT by probing (no AI Hub token available)..." >&2
-  VER="$(from_sweep || true)"
-  SRC="ranged-GET sweep"
+HUB_VER="$(from_aihub || true)"
+if [ -n "$HUB_VER" ]; then
+  hub_minor="${HUB_VER#2.}"; hub_minor="${hub_minor%%.*}"
+  [ "$hub_minor" -gt "$FROM_MINOR" ] && FROM_MINOR="$hub_minor"
+fi
+echo "resolving latest QAIRT by probing from 2.$FROM_MINOR up..." >&2
+VER="$(from_sweep || true)"
+SRC="ranged-GET sweep"
+if [ -z "${VER:-}" ] && [ -n "$HUB_VER" ] && exists "$HUB_VER"; then
+  VER="$HUB_VER"; SRC="AI Hub get_frameworks()"
 fi
 
 if [ -z "${VER:-}" ]; then
   cat >&2 <<EOF
 Could not resolve a QAIRT version.
 Check connectivity, or pass a known build explicitly:
-  VER=2.48.0.260626
+  VER=2.52.0.261104
   curl -L -O "$BASE/\$VER/v\$VER.zip"
 EOF
   exit 1
@@ -125,6 +129,9 @@ fi
 
 echo "QAIRT version : $VER   (via $SRC)"
 echo "download URL  : $(url_for "$VER")"
+if [ -n "$HUB_VER" ] && [ "$HUB_VER" != "$VER" ]; then
+  echo "note: AI Hub's newest accepted QAIRT is $HUB_VER; use that one if a local artifact must match an AI Hub job"
+fi
 
 [ -z "$DOWNLOAD_DIR" ] && exit 0
 
